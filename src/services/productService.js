@@ -1,12 +1,17 @@
 const axios = require('axios');
-const { parse } = require('node:path');
+
 const getProcessedProducts = async () => {
     try {
-        const response = await axios.get(process.env.EXTENAL_API_ARL);
-        const {product} = response.data;
+        const response = await axios.get(process.env.EXTERNAL_API_URL);
+         const products = response.data && response.data.products;
         if (!products) throw new Error("Datos incompletos de la API Externa");
+        
+        if (!Array.isArray(products)) {
+            throw new Error("Datos incompletos de la API Externa");
+        }
         return products.map( p => {
             const finalPrice = p.price*(1+ parseFloat(process.env.TAX_RATE));
+            const stock = Number.isFinite(p.stock) ? p.stock : 0;
             return{
                 id : p.id,
                 title : p.title,
