@@ -1,24 +1,31 @@
 {
   "name": "server",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Middleware de catalogo y precios sobre DummyJSON",
+  "main": "src/app.js",
   "scripts": {
     "start": "node src/app.js",
     "dev": "nodemon src/app.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "jest --runInBand"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "engines": {
+    "node": ">=20"
+  },
   "type": "commonjs",
   "dependencies": {
-    "dotenv": "^16.0.3",
     "axios": "^1.15.2",
     "cors": "^2.8.6",
-    "express": "^5.2.1"
+    "dotenv": "^16.0.3",
+    "express": "^5.2.1",
+    "pino": "^9.5.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14"
+    "jest": "^29.7.0",
+    "nodemon": "^3.1.14",
+    "supertest": "^7.0.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": ["**/tests/**/*.test.js"]
   }
 }

@@ -12,10 +12,12 @@ Microservicio en **Node.js + Express** que consume el catalogo publico de [Dummy
 - [Configuracion](#configuracion)
 - [Ejecucion local](#ejecucion-local)
 - [Ejecucion con Docker](#ejecucion-con-docker)
+- [Tests](#tests)
 - [Endpoints](#endpoints)
 - [Reglas de negocio](#reglas-de-negocio)
 - [Manejo de errores](#manejo-de-errores)
 - [Variables de entorno](#variables-de-entorno)
+- [Mejoras futuras](#mejoras-futuras)
 
 ## Caracteristicas
 
@@ -25,38 +27,45 @@ Microservicio en **Node.js + Express** que consume el catalogo publico de [Dummy
 - Genera el campo booleano `isLowStock` cuando `stock` es menor al umbral configurado.
 - Devuelve los productos ordenados por `price` de mayor a menor.
 - Manejo centralizado de errores con clase `AppError` y codigos semanticos (`EXTERNAL_API_TIMEOUT`, `INVALID_API_RESPONSE`, etc.).
-- Configuracion por variables de entorno con validacion al arranque.
-- Listo para correr en Docker.
+- Configuracion por variables de entorno con validacion al arranque (fail-fast).
+- Logging estructurado JSON con `pino`.
+- Suite de tests con `jest` + `supertest`.
+- Listo para correr en Docker con healthcheck integrado.
 
 ## Stack
 
 - Node.js 20
 - Express 5
 - Axios
+- pino (logging estructurado)
 - dotenv
 - cors
+- jest + supertest (testing)
 - Docker / Docker Compose
 
 ## Arquitectura
 
 El proyecto esta estructurado en capas con responsabilidades claras:
 
-| Capa            | Responsabilidad                                                             |
-| --------------- | --------------------------------------------------------------------------- |
-| **routes**      | Mapean URL + metodo HTTP a un metodo del controller                         |
-| **controllers** | Reciben req/res, llaman al service y formatean la respuesta HTTP            |
-| **services**    | Logica de negocio: consumo de la API externa y aplicacion de reglas         |
-| **dtos**        | Definen el shape de salida y aislan el modelo interno del de la API externa |
-| **utils**       | Errores tipados (`AppError`, `errors.js`) y middlewares (`errorHandler`)    |
+| Capa             | Responsabilidad                                                              |
+| ---------------- | ---------------------------------------------------------------------------- |
+| **routes**       | Mapean URL + metodo HTTP a un metodo del controller                          |
+| **controllers**  | Reciben req/res, llaman al service y formatean la respuesta HTTP             |
+| **services**     | Logica de negocio: aplican reglas (impuesto, isLowStock, orden)              |
+| **repositories** | Acceso a la fuente de datos externa. Aisla el resto del codigo de DummyJSON  |
+| **dtos**         | Definen el shape de salida y construyen modelos a partir de datos crudos     |
+| **utils**        | Errores tipados (`AppError`, `errors.js`), middlewares, logger               |
 
 Flujo de una request:
 
 ```
-HTTP --> routes --> controller --> service --> DTO --> response
-                                       ^
+HTTP --> routes --> controller --> service --> repository --> API externa
+                                       |
                                        v
-                                  API externa
+                                      DTO --> response
 ```
+
+Si manana se cambia DummyJSON por una BD propia, solo se reemplaza el repository: ni el controller ni el service ni el DTO se enteran.
 
 ## Estructura del proyecto
 
@@ -67,15 +76,20 @@ HTTP --> routes --> controller --> service --> DTO --> response
 |   |-- controllers/
 |   |   `-- productController.js     # Orquesta req/res del recurso products
 |   |-- dtos/
-|   |   `-- productDTO.js            # Shape de salida + reglas por producto
+|   |   `-- productDTO.js            # Shape de salida + factory desde API externa
+|   |-- repositories/
+|   |   `-- productRepository.js     # Acceso a DummyJSON (axios)
 |   |-- routes/
 |   |   `-- productRoutes.js         # Declaracion de endpoints
 |   |-- services/
-|   |   `-- productService.js        # Consumo y procesamiento del catalogo
+|   |   `-- productService.js        # Reglas de negocio + orden + filtrado
 |   `-- utils/
 |       |-- AppError.js              # Clase base de error operacional
-|       |-- errorHandler.js          # Middlewares: errorHandler, asyncHandler, notFoundHandler
-|       `-- errors.js                # NotFoundError, ValidationError, etc.
+|       |-- errorHandler.js          # Middlewares: error, async, 404
+|       |-- errors.js                # NotFoundError, ValidationError, etc.
+|       `-- logger.js                # Logger pino centralizado
+|-- tests/
+|   `-- products.test.js             # Tests de integracion con supertest
 |-- .dockerignore
 |-- .env.example
 |-- .gitignore
@@ -126,6 +140,23 @@ docker compose up -d --build
 # Detener
 docker compose down
 ```
+
+El compose incluye un `healthcheck` que pega contra `/health` cada 30 segundos.
+
+## Tests
+
+```bash
+npm test
+```
+
+Cubre:
+
+- Caso exitoso con orden por price desc, conversion de impuesto, default de `brand`/`category`, calculo de `isLowStock`.
+- Respuesta sin campo `products` (502 `INVALID_API_RESPONSE`).
+- Timeout del upstream (504 `EXTERNAL_API_TIMEOUT`).
+- Upstream con status 500 (502 `EXTERNAL_API_ERROR`).
+- Healthcheck.
+- Ruta inexistente (404 `NOT_FOUND`).
 
 ## Endpoints
 
@@ -194,7 +225,7 @@ curl http://localhost:3000/health
 | `brand`       | `'NA'` cuando la API externa no devuelve marca                     |
 | `category`    | `'NA'` cuando la API externa no devuelve categoria                 |
 | Orden         | Productos ordenados por `price` final, de mayor a menor            |
-| Filtrado      | Productos sin `id` o `price` se descartan silenciosamente          |
+| Filtrado      | Productos sin `id` o `price` validos se descartan silenciosamente  |
 
 ## Manejo de errores
 
@@ -215,19 +246,33 @@ Todas las respuestas de error siguen el mismo formato JSON:
 | 502  | `INVALID_API_RESPONSE`     | La API externa no incluye el arreglo `products`        |
 | 502  | `EXTERNAL_API_ERROR`       | La API externa devolvio un status >= 400               |
 | 502  | `EXTERNAL_API_UNREACHABLE` | Error de red / DNS                                     |
-| 504  | `EXTERNAL_API_TIMEOUT`     | La API externa tardo mas de 8 segundos en responder    |
-| 500  | `PRODUCT_SERVICE_ERROR`    | Error inesperado durante el procesamiento              |
-| 500  | `INTERNAL_ERROR`           | Error inesperado fuera del service                     |
+| 504  | `EXTERNAL_API_TIMEOUT`     | La API externa tardo mas de `REQUEST_TIMEOUT_MS` ms    |
+| 500  | `PRODUCT_REPOSITORY_ERROR` | Error inesperado en el repository                      |
+| 500  | `INTERNAL_ERROR`           | Error inesperado fuera del flujo controlado            |
 
-Toda la cadena de errores se canaliza vias `asyncHandler` -> `errorHandler` (middleware central) y nunca crashea el proceso.
+Toda la cadena de errores se canaliza via `asyncHandler` -> `errorHandler` (middleware central) y nunca crashea el proceso.
 
 ## Variables de entorno
 
-| Variable              | Descripcion                                  | Default                                                |
-| --------------------- | -------------------------------------------- | ------------------------------------------------------ |
-| `PORT`                | Puerto donde corre el servicio               | `3000`                                                 |
-| `EXTERNAL_API_URL`    | URL del catalogo externo                     | `https://dummyjson.com/products/search?q=phone`        |
-| `TAX_RATE`            | Impuesto aplicado al precio (0.16 = 16%)     | `0.16`                                                 |
-| `LOW_STOCK_THRESHOLD` | Umbral para marcar `isLowStock`              | `10`                                                   |
+| Variable              | Descripcion                                          | Default                                         |
+| --------------------- | ---------------------------------------------------- | ----------------------------------------------- |
+| `PORT`                | Puerto donde corre el servicio                       | `3000`                                          |
+| `EXTERNAL_API_URL`    | URL del catalogo externo (requerida)                 | `https://dummyjson.com/products/search?q=phone` |
+| `TAX_RATE`            | Impuesto aplicado al precio (0.16 = 16%)             | `0.16`                                          |
+| `LOW_STOCK_THRESHOLD` | Umbral para marcar `isLowStock`                      | `10`                                            |
+| `REQUEST_TIMEOUT_MS`  | Timeout en ms para llamadas a la API externa         | `8000`                                          |
+| `LOG_LEVEL`           | Nivel de log (`trace`, `debug`, `info`, `warn`, ...) | `info`                                          |
 
-`EXTERNAL_API_URL` y `TAX_RATE` se validan al arranque: si faltan o son invalidos, el proceso falla rapido con un mensaje claro.
+`EXTERNAL_API_URL`, `TAX_RATE` y `LOW_STOCK_THRESHOLD` se validan al arranque: si faltan o son invalidos, el proceso falla rapido con un mensaje claro.
+
+## Mejoras futuras
+
+Mejoras que no se incluyeron por estar fuera del scope de esta entrega, pero que serian los siguientes pasos para llevar este servicio a produccion:
+
+- **Retry con backoff exponencial** ante errores transitorios del upstream (`axios-retry`).
+- **Circuit breaker** (`opossum`) para evitar saturar la API externa cuando esta caida.
+- **Rate limiting** del endpoint propio (`express-rate-limit`).
+- **Cache** de la respuesta del upstream (Redis o memoria) con TTL corto.
+- **Validacion de input** con Zod o Joi cuando se agreguen query params (filtros, paginacion).
+- **Observabilidad**: metricas Prometheus, traces OpenTelemetry.
+- **Migracion a TypeScript** para tipado estatico de DTOs y respuestas.

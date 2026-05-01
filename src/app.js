@@ -4,7 +4,7 @@ const cors = require('cors');
 
 const productRoutes = require('./routes/productRoutes');
 const { errorHandler, notFoundHandler } = require('./utils/errorHandler');
-
+const logger = require('./utils/logger');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -17,12 +17,13 @@ app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 // Rutas de la API
 app.use('/api', productRoutes);
 
+// 404 + error handler (deben ir al final)
 app.use(notFoundHandler);
 app.use(errorHandler);
 
 if (require.main === module) {
     app.listen(PORT, () => {
-        console.log(`Middleware ejecutandose en puerto ${PORT}`);
+        logger.info(`Middleware ejecutandose en puerto ${PORT}`);
     });
 }
 
